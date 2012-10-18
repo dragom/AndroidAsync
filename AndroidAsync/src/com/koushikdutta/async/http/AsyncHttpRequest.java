@@ -61,4 +61,21 @@ public class AsyncHttpRequest {
     public void setFollowRedirect(boolean follow) {
         mFollowRedirect = follow;
     }
+    
+    void onConnectInternal(AsyncHttpResponse response) {
+        onConnect(response);
+    }
+    
+    protected void onConnect(AsyncHttpResponse response) {
+    }
+
+    
+    private AsyncHttpRequestContentWriter mWriter;
+    public void setContentWriter(AsyncHttpRequestContentWriter writer) {
+        mWriter = writer;
+    }
+    
+    public AsyncHttpRequestContentWriter getContentWriter() {
+        return mWriter;
+    }
 }

@@ -10,7 +10,9 @@ import org.json.JSONObject;
 import com.koushikdutta.async.AsyncSocket;
 import com.koushikdutta.async.BufferedDataSink;
 import com.koushikdutta.async.ByteBufferList;
+import com.koushikdutta.async.FilteredDataSink;
 import com.koushikdutta.async.callback.WritableCallback;
+import com.koushikdutta.async.http.filter.ChunkedOutputFilter;
 import com.koushikdutta.async.http.libcore.RawHeaders;
 import com.koushikdutta.async.http.libcore.ResponseHeaders;
 
@@ -33,48 +35,40 @@ public class AsyncHttpServerResponseImpl implements AsyncHttpServerResponse {
     
     @Override
     public void write(ByteBuffer bb) {
-        ByteBufferList list = new ByteBufferList();
-        list.add(bb);
-        write(list);
+        initFirstWrite();
+        mChunker.write(bb);
     }
 
-    ByteBufferList mLastChunk = null;
+    boolean mHasWritten = false;
+    FilteredDataSink mChunker;
+    void initFirstWrite() {
+        if (mHasWritten)
+            return;
+
+        Assert.assertTrue(mContentLength < 0);
+        Assert.assertNotNull(mRawHeaders.getStatusLine());
+        mRawHeaders.set("Transfer-Encoding", "Chunked");
+        writeHead();
+        mSink.setMaxBuffer(0);
+        mHasWritten = true;
+        mChunker = new ChunkedOutputFilter(mSink);
+    }
     @Override
     public void write(ByteBufferList bb) {
-        if (mLastChunk != null) {
-            mSocket.write(mLastChunk);
-            if (mLastChunk.remaining() == 0)
-                mLastChunk = null;
-            else
-                return;
-        }
-        Assert.assertTrue(mContentLength < 0);
-        if (null == mRawHeaders.get("Transfer-Encoding")) {
-            Assert.assertNotNull(mRawHeaders.getStatusLine());
-            mRawHeaders.set("Transfer-Encoding", "Chunked");
-            writeHead();
-        }
-        String chunkLen = Integer.toString(bb.remaining(), 16) + "\r\n";
-        bb.add(0, ByteBuffer.wrap(chunkLen.getBytes()));
-        bb.add(ByteBuffer.wrap("\r\n".getBytes()));
-        mSocket.write(bb);
-        // this will only buffer entire chunks.
-        if (bb.remaining() > 0) {
-            mLastChunk = new ByteBufferList();
-            ByteBuffer data = bb.read(bb.remaining());
-            mLastChunk.add(data);
-            bb.clear();
-        }
+        initFirstWrite();
+        mChunker.write(bb);
     }
 
     @Override
     public void setWriteableCallback(WritableCallback handler) {
-        mSocket.setWriteableCallback(handler);
+        initFirstWrite();
+        mChunker.setWriteableCallback(handler);
     }
 
     @Override
     public WritableCallback getWriteableCallback() {
-        return mSocket.getWriteableCallback();
+        initFirstWrite();
+        return mChunker.getWriteableCallback();
     }
 
     @Override
@@ -87,7 +81,7 @@ public class AsyncHttpServerResponseImpl implements AsyncHttpServerResponse {
         write(ByteBuffer.wrap(new byte[0]));
         onCompleted();
     }
-    
+
     private boolean mHeadWritten = false;
     @Override
     public void writeHead() {

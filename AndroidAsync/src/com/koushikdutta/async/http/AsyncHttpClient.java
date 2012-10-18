@@ -28,7 +28,7 @@ import com.koushikdutta.async.callback.ClosedCallback;
 import com.koushikdutta.async.callback.CompletedCallback;
 import com.koushikdutta.async.callback.ConnectCallback;
 import com.koushikdutta.async.callback.DataCallback;
-import com.koushikdutta.async.callback.ResultPairCallback;
+import com.koushikdutta.async.callback.RequestCallback;
 import com.koushikdutta.async.http.libcore.RawHeaders;
 import com.koushikdutta.async.stream.OutputStreamDataCallback;
 
@@ -101,6 +101,7 @@ public class AsyncHttpClient {
                             String kas = headers.get("Connection");
                             if (kas != null && "keep-alive".toLowerCase().equals(kas.toLowerCase()))
                                 keepalive = true;
+                            request.onConnect(this);
                             callback.onConnectCompleted(null, this);
                         }
                         catch (Exception ex) {
@@ -191,24 +192,24 @@ public class AsyncHttpClient {
         }
     }
     
-    public static interface DownloadCallback extends ResultPairCallback<AsyncHttpResponse, ByteBufferList> {
+    public static interface DownloadCallback extends RequestCallback<ByteBufferList> {
     }
     
-    public static interface StringCallback extends ResultPairCallback<AsyncHttpResponse, String> {
+    public static interface StringCallback extends RequestCallback<String> {
     }
 
-    public static interface JSONObjectCallback extends ResultPairCallback<AsyncHttpResponse, JSONObject> {
+    public static interface JSONObjectCallback extends RequestCallback<JSONObject> {
     }
     
-    public static interface FileCallback extends ResultPairCallback<AsyncHttpResponse, File> {
+    public static interface FileCallback extends RequestCallback<File> {
     }
     
     private interface ResultConvert {
         public Object convert(ByteBufferList bb) throws Exception;
     }
     
-    public static void download(String uri, final DownloadCallback callback) {
-        download(uri, callback, new ResultConvert() {
+    public static void get(String uri, final DownloadCallback callback) {
+        get(uri, callback, new ResultConvert() {
             @Override
             public Object convert(ByteBufferList b) {
                 return b;
@@ -216,8 +217,17 @@ public class AsyncHttpClient {
         });
     }
     
-    public static void download(String uri, final StringCallback callback) {
-        download(uri, callback, new ResultConvert() {
+    public static void get(String uri, final StringCallback callback) {
+        try {
+            execute(new AsyncHttpGet(uri), callback);
+        }
+        catch (URISyntaxException e) {
+            callback.onCompleted(e, null, null);
+        }
+    }
+    
+    public static void execute(AsyncHttpRequest req, final StringCallback callback) {
+        execute(req, callback, new ResultConvert() {
             @Override
             public Object convert(ByteBufferList bb) {
                 StringBuilder builder = new StringBuilder();
@@ -229,21 +239,17 @@ public class AsyncHttpClient {
         });
     }
 
-    public static void download(String uri, final JSONObjectCallback callback) {
-        download(uri, callback, new ResultConvert() {
-            @Override
-            public Object convert(ByteBufferList bb) throws JSONException {
-                StringBuilder builder = new StringBuilder();
-                for (ByteBuffer b: bb) {
-                    builder.append(new String(b.array(), b.arrayOffset() + b.position(), b.remaining()));
-                }
-                return new JSONObject(builder.toString());
-            }
-        });
+    public static void get(String uri, final JSONObjectCallback callback) {
+        try {
+            execute(new AsyncHttpGet(uri), callback);
+        }
+        catch (URISyntaxException e) {
+            callback.onCompleted(e, null, null);
+        }
     }
 
-    public static void download(AsyncHttpRequest req, final JSONObjectCallback callback) {
-        download(req, callback, new ResultConvert() {
+    public static void execute(AsyncHttpRequest req, final JSONObjectCallback callback) {
+        execute(req, callback, new ResultConvert() {
             @Override
             public Object convert(ByteBufferList bb) throws JSONException {
                 StringBuilder builder = new StringBuilder();
@@ -255,7 +261,7 @@ public class AsyncHttpClient {
         });
     }
     
-    private static void invoke(Handler handler, final ResultPairCallback callback, final AsyncHttpResponse response, final Exception e, final Object result) {
+    private static void invoke(Handler handler, final RequestCallback callback, final AsyncHttpResponse response, final Exception e, final Object result) {
         if (handler == null) {
             callback.onCompleted(e, response, result);
             return;
@@ -268,7 +274,16 @@ public class AsyncHttpClient {
         });
     }
     
-    public static void download(String uri, final String filename, final FileCallback callback) {
+    public static void get(String uri, final String filename, final FileCallback callback) {
+        try {
+            execute(new AsyncHttpGet(uri), filename, callback);
+        }
+        catch (URISyntaxException e) {
+            callback.onCompleted(e, null, null);
+        }
+    }
+    
+    public static void execute(AsyncHttpRequest req, final String filename, final FileCallback callback) {
         final Handler handler = Looper.myLooper() == null ? null : new Handler();
         final File file = new File(filename);
         final FileOutputStream fout;
@@ -279,7 +294,7 @@ public class AsyncHttpClient {
             invoke(handler, callback, null, e, null);
             return;
         }
-        connect(uri, new HttpConnectCallback() {
+        connect(req, new HttpConnectCallback() {
             @Override
             public void onConnectCompleted(Exception ex, final AsyncHttpResponse response) {
                 if (ex != null) {
@@ -314,7 +329,7 @@ public class AsyncHttpClient {
         });
     }
     
-    private static void download(AsyncHttpRequest req, final ResultPairCallback callback, final ResultConvert convert) {
+    private static void execute(AsyncHttpRequest req, final RequestCallback callback, final ResultConvert convert) {
         final Handler handler = Looper.myLooper() == null ? null : new Handler();
         connect(req, new HttpConnectCallback() {
             ByteBufferList buffer = new ByteBufferList();
@@ -348,9 +363,9 @@ public class AsyncHttpClient {
         });
     }
 
-    private static void download(String uri, final ResultPairCallback callback, final ResultConvert convert) {
+    private static void get(String uri, final RequestCallback callback, final ResultConvert convert) {
         try {
-            download(new AsyncHttpGet(new URI(uri)), callback, convert);
+            execute(new AsyncHttpGet(new URI(uri)), callback, convert);
         }
         catch (URISyntaxException e) {
             callback.onCompleted(e, null, null);
