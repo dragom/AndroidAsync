@@ -9,32 +9,48 @@ import com.koushikdutta.async.BufferedDataSink;
 import com.koushikdutta.async.ByteBufferList;
 import com.koushikdutta.async.DataEmitter;
 import com.koushikdutta.async.DataExchange;
-import com.koushikdutta.async.DataTransformerBase;
+import com.koushikdutta.async.FilteredDataCallback;
 import com.koushikdutta.async.ExceptionCallback;
+import com.koushikdutta.async.FilteredDataSink;
 import com.koushikdutta.async.LineEmitter;
+import com.koushikdutta.async.Util;
 import com.koushikdutta.async.LineEmitter.StringCallback;
 import com.koushikdutta.async.callback.ClosedCallback;
 import com.koushikdutta.async.callback.CompletedCallback;
 import com.koushikdutta.async.callback.DataCallback;
+import com.koushikdutta.async.callback.WritableCallback;
 import com.koushikdutta.async.http.filter.ChunkedInputFilter;
+import com.koushikdutta.async.http.filter.ChunkedOutputFilter;
 import com.koushikdutta.async.http.filter.GZIPInputFilter;
 import com.koushikdutta.async.http.filter.InflaterInputFilter;
 import com.koushikdutta.async.http.libcore.RawHeaders;
 import com.koushikdutta.async.http.libcore.ResponseHeaders;
 
-public class AsyncHttpResponseImpl extends DataTransformerBase implements AsyncHttpResponse {
+public class AsyncHttpResponseImpl extends FilteredDataCallback implements AsyncHttpResponse {
     private RawHeaders mRawHeaders = new RawHeaders();
     RawHeaders getRawHeaders() {
         return mRawHeaders;
     }
 
+    private AsyncHttpRequestContentWriter mWriter;
     void setSocket(AsyncSocket socket, DataExchange exchange) {
         mSocket = socket;
         mExchange = exchange;
 
-        mWriter = new BufferedDataSink(exchange);
+        mWriter = mRequest.getContentWriter();
+        if (mWriter != null) {
+            mRequest.getHeaders().setContentType(mWriter.getContentType());
+            mRequest.getHeaders().getHeaders().set("Transfer-Encoding", "Chunked");
+        }
+        
         String rs = mRequest.getRequestString();
-        mWriter.write(ByteBuffer.wrap(rs.getBytes()));
+        Util.writeAll(exchange, rs.getBytes(), new CompletedCallback() {
+            @Override
+            public void onCompleted(Exception ex) {
+                if (mWriter != null)
+                    mWriter.write(mRequest, AsyncHttpResponseImpl.this);
+            }
+        });
         
         LineEmitter liner = new LineEmitter(exchange);
         liner.setLineCallback(mHeaderCallback);
@@ -64,6 +80,7 @@ public class AsyncHttpResponseImpl extends DataTransformerBase implements AsyncH
     
     protected void onHeadersReceived() {
         mHeaders = new ResponseHeaders(mRequest.getUri(), mRawHeaders);
+        
         if (mHeaders.getContentLength() == 0) {
             report(null);
             return;
@@ -89,7 +106,7 @@ public class AsyncHttpResponseImpl extends DataTransformerBase implements AsyncH
                 report(new Exception("not using chunked encoding, and no content-length found."));
                 return;
             }
-            DataTransformerBase contentLengthWatcher = new DataTransformerBase() {
+            FilteredDataCallback contentLengthWatcher = new FilteredDataCallback() {
                 int totalRead = 0;
                 @Override
                 public void onDataAvailable(DataEmitter emitter, ByteBufferList bb) {
@@ -145,7 +162,6 @@ public class AsyncHttpResponseImpl extends DataTransformerBase implements AsyncH
         onCompleted(e);
     }
     
-    private BufferedDataSink mWriter;
     private AsyncSocket mSocket;
     private AsyncHttpRequest mRequest;
     private DataExchange mExchange;
@@ -192,5 +208,53 @@ public class AsyncHttpResponseImpl extends DataTransformerBase implements AsyncH
     @Override
     public ResponseHeaders getHeaders() {
         return mHeaders;
+    }
+
+    private boolean mFirstWrite = true;
+    private void assertContent() {
+        if (!mFirstWrite)
+            return;
+        mFirstWrite = false;
+        Assert.assertNotNull(mRequest.getHeaders().getHeaders().get("Content-Type"));
+        Assert.assertTrue(mRequest.getHeaders().getHeaders().get("Transfer-Encoding") != null || mRequest.getHeaders().getContentLength() != -1); 
+    }
+
+    ChunkedOutputFilter mChunker;
+    void initChunker() {
+        if (mChunker != null)
+            return;
+        mChunker = new ChunkedOutputFilter(mSocket);
+    }
+
+    @Override
+    public void write(ByteBuffer bb) {
+        assertContent();
+        initChunker();
+        mChunker.write(bb);
+    }
+
+    @Override
+    public void write(ByteBufferList bb) {
+        assertContent();
+        initChunker();
+        mChunker.write(bb);
+    }
+
+    @Override
+    public void end() {
+        write(ByteBuffer.wrap(new byte[0]));
+    }
+
+
+    @Override
+    public void setWriteableCallback(WritableCallback handler) {
+        initChunker();
+        mChunker.setWriteableCallback(handler);
+    }
+
+    @Override
+    public WritableCallback getWriteableCallback() {
+        initChunker();
+        return mChunker.getWriteableCallback();
     }
 }
